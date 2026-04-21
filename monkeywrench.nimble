@@ -1,0 +1,5 @@
+version       = "0.1.0"
+author        = "planetis-m"
+description   = "Lightweight C parser and Nimony bindings lowering extracted from Nimony."
+license       = "MIT"
+srcDir        = "src"

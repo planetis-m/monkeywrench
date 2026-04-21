@@ -1,0 +1,3 @@
+nimcache/
+tests/tcparser_pure
+tests/tcparser_nimony_integration
