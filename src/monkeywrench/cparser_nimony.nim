@@ -1,6 +1,6 @@
 # Lower the lightweight C AST into Nimony-facing NIF trees.
 
-import std/[strutils]
+import std/[strutils, tables]
 import cparser_ast, cparser
 import ../../../src/nimony/lib/nimonyplugins
 
@@ -14,6 +14,7 @@ type
     header: string
     exportSymbols: bool
     info: LineInfo
+    constValues: Table[string, BiggestInt]
 
 proc renderNimonyBindings*(
     decls: seq[CDecl];
@@ -28,7 +29,8 @@ func initLoweringContext(config: NimonyBindingsConfig): LoweringContext =
   LoweringContext(
     header: config.header,
     exportSymbols: config.exportSymbols,
-    info: config.originInfo
+    info: config.originInfo,
+    constValues: initTable[string, BiggestInt]()
   )
 
 proc exportedMarker(t: var NifBuilder; ctx: LoweringContext) =
@@ -76,7 +78,7 @@ proc bitsForBuiltin(bt: CBuiltinType): int =
   of btLongLong, btULongLong: 64
   of btLongDouble: 80
 
-proc appendType(t: var NifBuilder; typ: CType; ctx: LoweringContext)
+proc appendType(t: var NifBuilder; typ: CType; ctx: var LoweringContext)
 
 func isProcPointerTypedef(typ: CType): bool =
   typ.kind == ctPointer and not typ.base.isNil and typ.base.kind == ctFunction
@@ -153,14 +155,130 @@ proc parseCharLiteral(raw: string): uint64 =
 proc appendExpr(
     t: var NifBuilder;
     expr: CExpr;
-    ctx: LoweringContext
+    ctx: var LoweringContext
 )
+
+proc tryEvalConstExpr(
+    ctx: LoweringContext;
+    expr: CExpr;
+    value: var BiggestInt
+): bool
+
+proc tryEvalBinaryExpr(
+    ctx: LoweringContext;
+    op: string;
+    left, right: CExpr;
+    value: var BiggestInt
+): bool =
+  var a: BiggestInt
+  var b: BiggestInt
+  if not ctx.tryEvalConstExpr(left, a) or not ctx.tryEvalConstExpr(right, b):
+    return false
+
+  case op
+  of "+":
+    value = a + b
+  of "-":
+    value = a - b
+  of "*":
+    value = a * b
+  of "/":
+    if b == 0:
+      return false
+    value = a div b
+  of "%":
+    if b == 0:
+      return false
+    value = a mod b
+  of "<<":
+    if b < 0:
+      return false
+    value = a shl int(b)
+  of ">>":
+    if b < 0:
+      return false
+    value = a shr int(b)
+  of "&":
+    value = a and b
+  of "|":
+    value = a or b
+  of "^":
+    value = a xor b
+  of "&&":
+    value = if a != 0 and b != 0: 1 else: 0
+  of "||":
+    value = if a != 0 or b != 0: 1 else: 0
+  of "==":
+    value = if a == b: 1 else: 0
+  of "!=":
+    value = if a != b: 1 else: 0
+  of "<=":
+    value = if a <= b: 1 else: 0
+  of "<":
+    value = if a < b: 1 else: 0
+  of ">=":
+    value = if a >= b: 1 else: 0
+  of ">":
+    value = if a > b: 1 else: 0
+  else:
+    return false
+  result = true
+
+proc tryEvalConstExpr(
+    ctx: LoweringContext;
+    expr: CExpr;
+    value: var BiggestInt
+): bool =
+  case expr.kind
+  of ceNumber:
+    let parsed = parseNumberLiteral(expr.number, "constant expression")
+    value = cast[BiggestInt](parsed.value)
+    result = true
+  of ceChar:
+    value = cast[BiggestInt](parseCharLiteral(expr.charLit))
+    result = true
+  of ceIdent:
+    if expr.ident in ctx.constValues:
+      value = ctx.constValues[expr.ident]
+      result = true
+    else:
+      result = false
+  of ceUnary:
+    var a: BiggestInt
+    if not ctx.tryEvalConstExpr(expr.operand, a):
+      return false
+    case expr.unaryOp
+    of "+":
+      value = a
+    of "-":
+      value = -a
+    of "!":
+      value = if a == 0: 1 else: 0
+    of "~":
+      value = not a
+    else:
+      return false
+    result = true
+  of ceBinary:
+    result = ctx.tryEvalBinaryExpr(expr.binaryOp, expr.left, expr.right, value)
+  of ceCast:
+    result = ctx.tryEvalConstExpr(expr.castExpr, value)
+  of ceConditional:
+    var cond: BiggestInt
+    if not ctx.tryEvalConstExpr(expr.condExpr, cond):
+      return false
+    if cond != 0:
+      result = ctx.tryEvalConstExpr(expr.thenExpr, value)
+    else:
+      result = ctx.tryEvalConstExpr(expr.elseExpr, value)
+  of ceSizeofExpr, ceSizeofType, ceAlignofType:
+    result = false
 
 proc appendBinaryExpr(
     t: var NifBuilder;
     op: string;
     left, right: CExpr;
-    ctx: LoweringContext
+    ctx: var LoweringContext
 ) =
   case op
   of "+":
@@ -242,8 +360,13 @@ proc appendBinaryExpr(
 proc appendExpr(
     t: var NifBuilder;
     expr: CExpr;
-    ctx: LoweringContext
+    ctx: var LoweringContext
 ) =
+  var constValue: BiggestInt
+  if ctx.tryEvalConstExpr(expr, constValue):
+    t.addIntLit(constValue)
+    return
+
   case expr.kind
   of ceNumber:
     let parsed = parseNumberLiteral(expr.number, "numeric literal")
@@ -296,7 +419,8 @@ func shouldEmitDecl(decl: CDecl): bool =
 proc appendEnumField(
     t: var NifBuilder;
     item: CEnumItem;
-    ctx: LoweringContext
+    ctx: var LoweringContext;
+    nextValue: var BiggestInt
 ) =
   t.withTree EfldU, ctx.info:
     t.addIdent(item.name)
@@ -307,11 +431,28 @@ proc appendEnumField(
     t.addEmptyNode()
     t.addEmptyNode()
     if item.valueExpr.isNil:
-      t.addEmptyNode()
+      ctx.constValues[item.name] = nextValue
+      t.addIntLit(nextValue)
+      inc nextValue
     else:
-      t.appendExpr(item.valueExpr, ctx)
+      var constValue: BiggestInt
+      if ctx.tryEvalConstExpr(item.valueExpr, constValue):
+        ctx.constValues[item.name] = constValue
+        t.addIntLit(constValue)
+        nextValue = constValue + 1
+      else:
+        t.appendExpr(item.valueExpr, ctx)
 
-proc appendField(t: var NifBuilder; field: CDecl; ctx: LoweringContext) =
+proc appendEnumBody(
+    t: var NifBuilder;
+    items: seq[CEnumItem];
+    ctx: var LoweringContext
+) =
+  var nextValue = 0.BiggestInt
+  for item in items:
+    t.appendEnumField(item, ctx, nextValue)
+
+proc appendField(t: var NifBuilder; field: CDecl; ctx: var LoweringContext) =
   t.withTree FldU, ctx.info:
     t.addIdent(field.name)
     t.addEmptyNode()
@@ -325,7 +466,7 @@ proc appendParam(
     t: var NifBuilder;
     param: CDecl;
     idx: int;
-    ctx: LoweringContext
+    ctx: var LoweringContext
 ) =
   let name = if param.name.len == 0: "a" & $idx else: param.name
   t.withTree ParamU, ctx.info:
@@ -343,7 +484,7 @@ proc appendParams(
     t: var NifBuilder;
     params: seq[CDecl];
     isVariadic: bool;
-    ctx: LoweringContext
+    ctx: var LoweringContext
 ) =
   t.withTree ParamsU, ctx.info:
     for i, param in params:
@@ -360,7 +501,7 @@ proc appendParams(
 proc appendProcTypeBody(
     t: var NifBuilder;
     fn: CType;
-    ctx: LoweringContext
+    ctx: var LoweringContext
 ) =
   t.withTree ProctypeT, ctx.info:
     t.addEmptyNode()
@@ -396,7 +537,7 @@ proc appendBuiltinType(t: var NifBuilder; typ: CType; info: LineInfo) =
     t.withTree IT, info:
       t.addIntLit(bitsForBuiltin(typ.builtin))
 
-proc appendType(t: var NifBuilder; typ: CType; ctx: LoweringContext) =
+proc appendType(t: var NifBuilder; typ: CType; ctx: var LoweringContext) =
   case typ.kind
   of ctBuiltin:
     t.appendBuiltinType(typ, ctx.info)
@@ -418,9 +559,11 @@ proc appendType(t: var NifBuilder; typ: CType; ctx: LoweringContext) =
         if typ.lenExpr.isNil:
           t.addIntLit(0)
         else:
-          t.withTree SubX, ctx.info:
-            t.appendExpr(typ.lenExpr, ctx)
-            t.addIntLit(1)
+          var arrayLen: BiggestInt
+          if ctx.tryEvalConstExpr(typ.lenExpr, arrayLen):
+            t.addIntLit(arrayLen - 1)
+          else:
+            raise newException(ValueError, "array length expression is not supported in lowering yet")
   of ctFunction:
     t.appendProcTypeBody(typ, ctx)
   of ctStruct, ctUnion:
@@ -438,13 +581,12 @@ proc appendType(t: var NifBuilder; typ: CType; ctx: LoweringContext) =
       t.withTree EnumT, ctx.info:
         t.withTree UT, ctx.info:
           t.addIntLit(32)
-        for item in typ.items:
-          t.appendEnumField(item, ctx)
+        t.appendEnumBody(typ.items, ctx)
 
 proc appendTypeDecl(
     t: var NifBuilder;
     decl: CDecl;
-    ctx: LoweringContext
+    ctx: var LoweringContext
 ) =
   t.withTree TypeS, ctx.info:
     t.addIdent(decl.name)
@@ -475,7 +617,7 @@ proc appendTypeDecl(
 proc appendStandaloneTaggedType(
     t: var NifBuilder;
     typ: CType;
-    ctx: LoweringContext
+    ctx: var LoweringContext
 ) =
   let name = typ.tagName
   t.withTree TypeS, ctx.info:
@@ -511,15 +653,14 @@ proc appendStandaloneTaggedType(
       t.withTree EnumT, ctx.info:
         t.withTree UT, ctx.info:
           t.addIntLit(32)
-        for item in typ.items:
-          t.appendEnumField(item, ctx)
+        t.appendEnumBody(typ.items, ctx)
     else:
       t.appendType(typ, ctx)
 
 proc appendProcDecl(
     t: var NifBuilder;
     decl: CDecl;
-    ctx: LoweringContext
+    ctx: var LoweringContext
 ) =
   assert decl.typ.kind == ctFunction
   t.withTree ProcS, ctx.info:
@@ -541,7 +682,7 @@ proc appendProcDecl(
 proc appendVarDecl(
     t: var NifBuilder;
     decl: CDecl;
-    ctx: LoweringContext
+    ctx: var LoweringContext
 ) =
   t.withTree GvarS, ctx.info:
     t.addIdent(decl.name)
@@ -551,7 +692,7 @@ proc appendVarDecl(
     t.addEmptyNode()
 
 proc renderNimonyBindings*(decls: seq[CDecl]; config: NimonyBindingsConfig): NifBuilder =
-  let ctx = initLoweringContext(config)
+  var ctx = initLoweringContext(config)
   result = createTree()
   result.withTree StmtsS, ctx.info:
     var seenTagged: seq[string] = @[]
