@@ -77,8 +77,8 @@ This document is meant for the next coding agent. It points at the current imple
 
 - integration surface:
   - `NimonyBindingsConfig`: lines 7-16
-  - `renderNimonyBindings`: lines 585-607
-  - `parseCBindingsToNimony`: lines 609-610
+  - `renderNimonyBindings`: near the end of the file
+  - `parseCBindingsToNimony`: final proc in the file
 - literal decoding:
   - `parseNumberLiteral`: lines 87-109
   - `parseCharLiteral`: lines 111-154
@@ -86,7 +86,6 @@ This document is meant for the next coding agent. It points at the current imple
   - `appendBinaryExpr`: lines 162-243
   - `appendExpr`: lines 245-290
 - type/declaration lowering:
-  - `validateDecl` and `validateType`: lines 294-319
   - `appendEnumField`: lines 328-344
   - `appendField`: lines 346-354
   - `appendParam`: lines 356-372
@@ -128,7 +127,7 @@ This document is meant for the next coding agent. It points at the current imple
   - unary expressions
   - binary expressions
   - casts
-  - `sizeof(type)`
+- `sizeof(type)`
 - array bounds through the same supported expression subset
 
 ## Intentional lowering gaps
@@ -138,31 +137,35 @@ These forms already parse but intentionally fail in `appendExpr`:
 - `ceConditional`
 - `ceSizeofExpr`
 - `ceAlignofType`
+- `ccVectorcall` is currently ignored in `addCallConvPragma`
 
 Reason:
 
-- `nimonyplugins` currently validates `SizeofX` and `AlignofX` as type-only children.
-- We do not yet have a validator-safe plugin encoding for `sizeof(expr)`.
+- `sizeof(expr)` does not yet have a settled lowering strategy in this repo and now returns a plugin error instead of bubbling an exception.
 - `AlignofX` is still not implemented in Nimony sema.
 - Ternary lowering should not be guessed until the correct target form is chosen.
+- Nimony has no current lowering path here for `vectorcall`, so the lowerer emits nothing for it.
 
 ## Concrete next code targets
 
-### 1. `typeof` support in `parseDeclSpec`
+### 1. `typeof(expr)` support in `parseDeclSpec`
 
 Location:
 
 - `src/monkeywrench/cparser.nim:351-477`
-- specifically the `of "typeof", "__typeof__":` branch at lines 432-433
+- specifically:
+  - `parseTypeofSpecifier`: `src/monkeywrench/cparser.nim:312-318`
+  - `of "typeof", "__typeof__":` branch in `parseDeclSpec`
 
 Current status:
 
-- `typeof` and `__typeof__` explicitly raise `"typeof is not implemented yet"`.
+- `typeof(type-name)` is implemented.
+- `typeof(expr)` still raises `"typeof(expr) is not implemented yet"`.
 
 Expected direction:
 
 - follow chibicc's `typeof_specifier`
-- support both expression and type-name forms if practical
+- support the expression form only if the parser can produce a defensible `CType`
 - keep the result as a `CType`, not a string fragment
 
 ### 2. A real decision for `sizeof(expr)`
@@ -181,8 +184,8 @@ Current status:
 
 Expected direction:
 
-- verify the actual plugin-safe NIF shape first
-- do not emit a hand-made shape that passes rendering but fails validation
+- decide the actual lowering shape first
+- do not emit a hand-made shape just because it renders plausibly
 
 ### 3. `_Alignof(type)` integration
 
@@ -196,14 +199,30 @@ Locations:
 ## Test entrypoints
 
 - pure parser regression suite:
-  - `tests/tcparser_pure.nim:1-95`
-- Nimony integration regression suite:
-  - `tests/tcparser_nimony_integration.nim:1-33`
+  - `tests/tcparser_pure.nim`
+- positive plugin compile case:
+  - `tests/plugin_compile_ok.nim`
+- negative plugin compile case:
+  - `tests/plugin_compile_error.nim`
 
 Current status:
 
 - parser produces `ceAlignofType`
 - lowerer rejects it because Nimony sema still reports Alignof as unimplemented
+
+### 4. `__vectorcall`
+
+Locations:
+
+- parser:
+  - `src/monkeywrench/cparser.nim`, `callConvFromLexeme`
+- lowerer:
+  - `src/monkeywrench/cparser_nimony.nim`, `addCallConvPragma`
+
+Current status:
+
+- parser records `ccVectorcall`
+- lowerer explicitly does `discard "not implemented"`
 
 ## Suggested workflow for the next agent
 

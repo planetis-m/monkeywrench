@@ -51,10 +51,7 @@ proc addCallConvPragma(t: var NifBuilder; cc: CCallConv; info: LineInfo) =
     t.addParLe("fastcall", info)
     t.addParRi()
   of ccVectorcall:
-    # Nimony has no vectorcall tag today; preserve it as a generic attr.
-    t.addParLe("attr", info)
-    t.addStrLit "__vectorcall"
-    t.addParRi()
+    discard "not implemented"
 
 proc addImportPragmas(t: var NifBuilder; cName, header: string; info: LineInfo;
                       bycopy = false; callConv = ccNone) =
@@ -257,7 +254,7 @@ proc appendExpr(
   of ceChar:
     t.addIntLit(cast[BiggestInt](parseCharLiteral(expr.charLit)))
   of ceIdent:
-    t.addIdent(expr.ident)
+    t.addSymUse(expr.ident, ctx.info)
   of ceUnary:
     case expr.unaryOp
     of "+":
@@ -288,35 +285,6 @@ proc appendExpr(
     raise newException(ValueError, "sizeof(expr) is not supported in lowering yet")
   of ceAlignofType:
     raise newException(ValueError, "_Alignof is not supported in lowering yet")
-
-proc validateType(typ: CType; context: string)
-
-proc validateDecl(decl: CDecl) =
-  let context =
-    if decl.name.len > 0:
-      decl.name
-    else:
-      renderType(decl.typ)
-  validateType(decl.typ, context)
-
-proc validateType(typ: CType; context: string) =
-  case typ.kind
-  of ctArray:
-    validateType(typ.elem, context)
-  of ctPointer:
-    validateType(typ.base, context)
-  of ctFunction:
-    validateType(typ.returnType, context)
-    for param in typ.params:
-      validateDecl(param)
-  of ctStruct, ctUnion:
-    for field in typ.fields:
-      validateDecl(field)
-  of ctEnum:
-    for item in typ.items:
-      discard
-  of ctBuiltin, ctNamed:
-    discard
 
 func shouldEmitDecl(decl: CDecl): bool =
   if scStatic in decl.storage:
@@ -584,9 +552,6 @@ proc appendVarDecl(
 
 proc renderNimonyBindings*(decls: seq[CDecl]; config: NimonyBindingsConfig): NifBuilder =
   let ctx = initLoweringContext(config)
-  for decl in decls:
-    validateDecl(decl)
-
   result = createTree()
   result.withTree StmtsS, ctx.info:
     var seenTagged: seq[string] = @[]
@@ -607,4 +572,7 @@ proc renderNimonyBindings*(decls: seq[CDecl]; config: NimonyBindingsConfig): Nif
         result.appendVarDecl(decl, ctx)
 
 proc parseCBindingsToNimony*(source: string; config: NimonyBindingsConfig): NifBuilder =
-  renderNimonyBindings(parseTopLevelDecls(source), config)
+  try:
+    result = renderNimonyBindings(parseTopLevelDecls(source), config)
+  except CatchableError as e:
+    result = errorTree(e.msg)

@@ -25,5 +25,5 @@
 
 1. Follow chibicc for grammar shape first, especially in expression and declarator parsing.
 2. Keep AST additions minimal and structural. Do not reintroduce stringly expression payloads.
-3. Only emit NIF shapes that `nimonyplugins` currently validates.
-4. If Nimony lacks a valid target encoding, keep the form parseable but reject it clearly during lowering.
+3. If Nimony lacks a clear target encoding, keep the form parseable but reject it clearly during lowering.
+4. Where chibicc depends on full C type analysis, only port the subset that this lightweight parser can represent honestly.

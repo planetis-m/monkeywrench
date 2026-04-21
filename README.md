@@ -6,7 +6,8 @@ This repo is intentionally split from the parent compiler sources:
 
 - `src/monkeywrench/` contains the parser, AST, lexer, and NIF lowerer.
 - `tests/tcparser_pure.nim` covers the standalone parser without Nimony dependencies.
-- `tests/tcparser_nimony_integration.nim` covers lowering through `nimonyplugins`.
+- `tests/plugin_compile_ok.nim` exercises the actual plugin pipeline through Nimony.
+- `tests/plugin_compile_error.nim` is a negative plugin case.
 - `docs/` contains architecture notes and a detailed porting handoff.
 - `plan/` contains the active implementation plan.
 
@@ -27,7 +28,7 @@ nim c --path:src --nimcache:/tmp/monkeywrench-pure -r tests/tcparser_pure.nim
 Nimony integration test:
 
 ```sh
-nim c --path:src --nimcache:/tmp/monkeywrench-nimony -r tests/tcparser_nimony_integration.nim
+bin/nimony c monkeywrench/tests/plugin_compile_ok.nim
 ```
 
 ## Status
@@ -37,11 +38,12 @@ Implemented today:
 - top-level declarations, tags, typedef tracking, call conventions
 - declarator parsing for pointers, arrays, function types, and nested declarators
 - constant-expression AST for numbers, chars, identifiers, unary ops, binary ops, casts, `sizeof(type)`, `_Alignof(type)`, and ternary parse trees
-- NIF lowering for declarations plus enum/array constant expressions where the `nimonyplugins` validator already accepts the target shapes
+- NIF lowering for declarations plus enum/array constant expressions in the subset currently supported by the Nimony integration layer
 
 Known intentional gaps:
 
-- `sizeof(expr)` parses but does not lower yet
+- `sizeof(expr)` parses but currently fails as a plugin error during lowering
 - `_Alignof(type)` parses but does not lower yet
 - ternary expressions parse but do not lower yet
-- `typeof` in `declspec` is still unimplemented
+- `typeof(expr)` in `declspec` is still unimplemented
+- `__vectorcall` is parsed but currently ignored during lowering

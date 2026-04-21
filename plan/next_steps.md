@@ -2,9 +2,9 @@
 
 ## Immediate
 
-1. Implement `typeof` and `__typeof__` in `parseDeclSpec`, following chibicc's `typeof_specifier` path instead of inventing a different grammar.
+1. Extend `typeof` from `typeof(type-name)` to `typeof(expr)` if a reliable lightweight expression-type model can be defined.
 2. Decide the correct Nimony-side representation for `sizeof(expr)` and `_Alignof(type)`.
-3. Add explicit validation around unsupported lowering forms so plugin failures remain source-level and predictable.
+3. Keep unsupported lowering forms explicit and localized so failures stay predictable.
 
 ## Parser
 

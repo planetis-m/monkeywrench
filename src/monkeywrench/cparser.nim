@@ -151,6 +151,7 @@ proc collectUntilTopLevel(p: var Parser; delimiters: set[char]): string =
   result = collectUntil(p, delimiters)
 
 proc parseTypeName(p: var Parser): CType
+proc parseTypeofSpecifier(p: var Parser): CType
 proc parseConstExpr(p: var Parser): CExpr
 proc parseConditionalExpr(p: var Parser): CExpr
 proc parseLogOrExpr(p: var Parser): CExpr
@@ -309,6 +310,14 @@ proc parseConditionalExpr(p: var Parser): CExpr =
 proc parseConstExpr(p: var Parser): CExpr =
   p.parseConditionalExpr()
 
+proc parseTypeofSpecifier(p: var Parser): CType =
+  p.expect("(")
+  if p.isTypeNameStart():
+    result = p.parseTypeName()
+  else:
+    raise p.fail("typeof(expr) is not implemented yet")
+  p.expect(")")
+
 proc mapBuiltin(counterVoid, counterBool, counterChar, counterShort, counterInt,
                 counterLong, counterFloat, counterDouble: int;
                 seenSigned, seenUnsigned: bool): CType =
@@ -430,7 +439,12 @@ proc parseDeclSpec(p: var Parser; allowStorage: bool): CDeclSpec =
       result.baseType = p.parseEnumSpecifier()
       sawOther = true
     of "typeof", "__typeof__":
-      raise p.fail("typeof is not implemented yet")
+      if sawOther or counterVoid + counterBool + counterChar + counterShort +
+          counterInt + counterLong + counterFloat + counterDouble > 0:
+        break
+      p.bump()
+      result.baseType = p.parseTypeofSpecifier()
+      sawOther = true
     of "void":
       inc counterVoid
       p.bump()
